@@ -1,3 +1,12 @@
+#include <Adafruit_SSD1306.h>
+#include <splash.h>
+
+#include <Adafruit_GFX.h>
+#include <Adafruit_GrayOLED.h>
+#include <Adafruit_SPITFT.h>
+#include <Adafruit_SPITFT_Macros.h>
+#include <gfxfont.h>
+
 #include <SpheroRVR.h>
 #include <DriveControl.h>
 #include <LEDControl.h>
@@ -10,7 +19,10 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 DriveControl dc;
 LedControl lc;
 
-#define OBSTACLE 13
+#define OBSTACLE_FRONT 13
+#define OBSTACLE_RIGHT 8
+#define OBSTACLE_LEFT 12
+#define PIR_START 4
 
 bool stopFlag = false;
 
@@ -63,11 +75,30 @@ void rotate180() {
   rvr.resetYaw(); // important!
 }
 
+void rotateLeft90() {
+  dc.setHeading(270);           // 270° corespunde unei rotiri la stanga
+  dc.rollStart(270, 0);         // viteza 0 -> doar setarea headingului
+  delay(1000);                  // asteptam sa aplice heading-ul
+  dc.rollStop(270);            
+  rvr.resetYaw();               // reseteaza heading-ul la 0
+}
+
+void rotateRight90() {
+  dc.setHeading(90);            // 90° corespunde unei rotiri la dreapta
+  dc.rollStart(90, 0);          // viteza 0 -> doar setarea headingului
+  delay(1000);                  
+  dc.rollStop(90);
+  rvr.resetYaw();               // reseteaza heading-ul la 0
+}
+
 void setup() {
   rvr.configUART(&Serial);
   delay(2000);
 
-  pinMode(OBSTACLE, INPUT);
+  pinMode(OBSTACLE_FRONT, INPUT);
+  pinMode(OBSTACLE_LEFT, INPUT);
+  pinMode(OBSTACLE_RIGHT, INPUT);
+  pinMode(PIR_START, INPUT);
 
   dc = rvr.getDriveControl();
   lc = rvr.getLedControl();
@@ -90,14 +121,44 @@ void loop() {
   rvr.enableColorDetectionNotify(true, 1000, 20, colorCallback);
   rvr.getCurrentDetectedColorReading();
 
-  int obstacle = digitalRead(OBSTACLE);
-  lcd.setCursor(0, 1);
-  if (obstacle == LOW) {
-    lcd.print("OBSTACOL       ");
+  int obstacle_front = digitalRead(OBSTACLE_FRONT);
+  int obstacle_left = digitalRead(OBSTACLE_LEFT);
+  int obstacle_right = digitalRead(OBSTACLE_RIGHT);
+  int start = digitalRead(PIR_START);
+  
+  if(start == HIGH){
+    lcd.setCursor(0, 0);
+    lcd.print("START          ");
+    dc.setHeading(0);
+    dc.rollStart(0, 16);
+    lcd.print("               ");
+  }
+
+  if (obstacle_front == LOW) {
+    lcd.setCursor(0, 1);
+    lcd.print("OBSTACLE F     ");
     rotate180();
-  } else {
+    delay(1000);
+    dc.rollStart(0, 16);
+
+  }
+  if (obstacle_left == LOW) {
+    lcd.setCursor(0, 1);
+    lcd.print("OBSTACLE L     ");
+    rotateLeft90();
+    delay(1000);
+    dc.rollStart(0, 16);
+  }
+  if (obstacle_right == LOW) {
+    lcd.setCursor(0, 1);
+    lcd.print("OBSTACLE R     ");
+    rotateRight90();
+    delay(1000);
+    dc.rollStart(0, 16);
+  }
+  else {
+    lcd.setCursor(0, 1);
     lcd.print("Liber          ");
-    moveForward();
   }
 }
 
@@ -118,7 +179,6 @@ void colorCallback(ColorDetectionNotifyReturn_t *detection) {
       stopMotion();
     } else if (g > threshold) {
       lcd.print("VERDE          ");
-      moveForward();
     } else if (b > threshold) {
       lcd.print("ALBASTRU       ");
     } else {
