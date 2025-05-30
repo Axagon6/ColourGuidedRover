@@ -22,98 +22,77 @@ LedControl lc;
 #define OBSTACLE_FRONT 13
 #define OBSTACLE_RIGHT 8
 #define OBSTACLE_LEFT 12
-#define PIR_START 4
+#define OBSTACLE_E_LEFT A1
+#define OBSTACLE_E_RIGHT A0
+#define PIR_START 2
 
-bool stopFlag = false;
 
-struct RGBColor {
-  uint8_t r, g, b;
-};
+bool shouldMoveForward = false;
+bool isStarted = false;
+unsigned long lastRollUpdate = 0;
+const unsigned long rollInterval = 250; // in ms
 
-static uint32_t ledGroup;
-
-RGBColor getColorFromId(uint8_t id) {
-  switch (id) {
-    case 1: return {255, 0, 0};     // Red
-    case 2: return {0, 255, 0};     // Green
-    case 3: return {0, 0, 255};     // Blue
-    case 4: return {255, 255, 0};   // Yellow
-    case 5: return {0, 255, 255};   // Cyan
-    case 6: return {255, 0, 255};   // Magenta
-    case 7: return {255, 255, 255}; // White
-    case 8: return {255, 165, 0};   // Orange
-    case 9: return {255, 192, 203}; // Pink
-    default: return {0, 0, 0};      // Black or unknown
-  }
-}
-
-void moveForward() {
-  dc.rollStart(0, 64); // 0° = inainte
-}
-
-void moveBackward() {
-  dc.rollStart(180, 64); // 180° = inapoi
-}
-
-void turnRight() {
-  dc.rollStart(90, 64); // 90° = dreapta
-}
-
-void turnLeft() {
-  dc.rollStart(270, 64); // 270° = stanga
-}
-
-void stopMotion() {
-  dc.rollStop(0); // opreste complet miscarea
-}
 
 void rotate180() {
-  dc.setHeading(180);
-  dc.rollStart(180, 0);
-  delay(1000);
-  dc.rollStop(180);
-  rvr.resetYaw(); // important!
+  dc.setHeading(180);       // folosim DriveControl, nu rvr
+  dc.rollStart(180, 64);     // miscare cu viteza 0 doar pentru aplicarea heading-ului
+  delay(1350);                         // mic delay pentru aplicare
 }
 
-void rotateLeft90() {
-  dc.setHeading(270);           // 270° corespunde unei rotiri la stanga
-  dc.rollStart(270, 0);         // viteza 0 -> doar setarea headingului
-  delay(1000);                  // asteptam sa aplice heading-ul
-  dc.rollStop(270);            
-  rvr.resetYaw();               // reseteaza heading-ul la 0
+void rotate180_fast() {
+  //dc.setHeading(180);       // folosim DriveControl, nu rvr
+  //dc.rollStart(128, 128);     // miscare cu viteza 0 doar pentru aplicarea heading-ului
+  //delay(675); 
+  dc.setRawMotors(rawMotorModes::forward, 255, rawMotorModes::reverse, 255);
+  delay(515);
+  rvr.resetYaw();
+  dc.resetHeading();
 }
 
-void rotateRight90() {
-  dc.setHeading(90);            // 90° corespunde unei rotiri la dreapta
-  dc.rollStart(90, 0);          // viteza 0 -> doar setarea headingului
-  delay(1000);                  
-  dc.rollStop(90);
-  rvr.resetYaw();               // reseteaza heading-ul la 0
+void rotate180_ultrafast() {
+  dc.setHeading(180);       // folosim DriveControl, nu rvr
+  dc.rollStart(180, 192);     // miscare cu viteza 0 doar pentru aplicarea heading-ului
+  delay(450);                         // mic delay pentru aplicare
+}
+
+void rotate180_extreme() {
+  dc.setHeading(180);       // folosim DriveControl, nu rvr
+  dc.rollStart(180, 255);     // miscare cu viteza 0 doar pentru aplicarea heading-ului
+  delay(337);                         // mic delay pentru aplicare
 }
 
 void setup() {
   rvr.configUART(&Serial);
-  delay(2000);
+  delay(200);
 
   pinMode(OBSTACLE_FRONT, INPUT);
   pinMode(OBSTACLE_LEFT, INPUT);
   pinMode(OBSTACLE_RIGHT, INPUT);
+  pinMode(OBSTACLE_E_LEFT, INPUT);
+  pinMode(OBSTACLE_E_RIGHT, INPUT);
   pinMode(PIR_START, INPUT);
 
   dc = rvr.getDriveControl();
   lc = rvr.getLedControl();
 
+  rvr.resetYaw(); // setam orientarea aici
+
   lcd.init();
   lcd.backlight();
-  lcd.setCursor(0, 0);
-  lcd.print("Salut RVR!");
-  lcd.setCursor(0, 1);
-  lcd.print("Test I2C OK!");
-  delay(2000);
+  //lcd.setCursor(0, 0);
+  //lcd.print("Salut RVR!");
+  //lcd.setCursor(0, 1);
+  //lcd.print("Debounce PIR");
+  //delay(5100);
   lcd.clear();
-
-  ledGroup = 0;
 }
+
+unsigned long frontCooldown = 0;
+unsigned long leftCooldown = 0;
+unsigned long rightCooldown = 0;
+unsigned long e_leftCooldown = 0;
+unsigned long e_rightCooldown = 0;
+const unsigned long cooldownTime = 1200;
 
 void loop() {
   rvr.poll();
@@ -121,44 +100,114 @@ void loop() {
   rvr.enableColorDetectionNotify(true, 1000, 20, colorCallback);
   rvr.getCurrentDetectedColorReading();
 
+  unsigned long now = millis();
+
   int obstacle_front = digitalRead(OBSTACLE_FRONT);
   int obstacle_left = digitalRead(OBSTACLE_LEFT);
   int obstacle_right = digitalRead(OBSTACLE_RIGHT);
+  int obstacle_e_left = digitalRead(OBSTACLE_E_LEFT);
+  int obstacle_e_right = digitalRead(OBSTACLE_E_RIGHT);
   int start = digitalRead(PIR_START);
+
+   lcd.setCursor(14, 1);
+   lcd.print(start);
   
-  if(start == HIGH){
-    lcd.setCursor(0, 0);
-    lcd.print("START          ");
+  if (!isStarted && start == HIGH) {
+    isStarted = true;
+    shouldMoveForward = true;
+    lcd.setCursor(0, 1);
+    lcd.print("START ");
     dc.setHeading(0);
+    delay(1500);
+  }
+  // if(start==HIGH){
+  //   lcd.setCursor(0, 1);
+  //   lcd.print("PIR           ");
+  //   delay(1500);
+  // }
+
+  // Mers continuu daca e activat
+  if (shouldMoveForward && now - lastRollUpdate > rollInterval) {
     dc.rollStart(0, 16);
-    lcd.print("               ");
+    lcd.setCursor(0, 1);
+    lcd.print("FORWARD    ");
+    lastRollUpdate = now;
   }
 
-  if (obstacle_front == LOW) {
+  if (obstacle_front == LOW || (obstacle_left == LOW && obstacle_right == LOW)) {
     lcd.setCursor(0, 1);
-    lcd.print("OBSTACLE F     ");
-    rotate180();
-    delay(1000);
+    lcd.print("OBSTACLE F ");
+    shouldMoveForward = false;
+    dc.rollStop(0);
+    dc.setRawMotors(rawMotorModes::reverse, 64, rawMotorModes::reverse, 64);
+    delay(450);
+    rotate180_fast();
+    //frontCooldown = millis() + cooldownTime;
+    rvr.resetYaw();
+    dc.resetHeading();
+    shouldMoveForward = true;
     dc.rollStart(0, 16);
-
-  }
-  if (obstacle_left == LOW) {
     lcd.setCursor(0, 1);
-    lcd.print("OBSTACLE L     ");
-    rotateLeft90();
-    delay(1000);
+    lcd.print("FORWARD    ");
+    lastRollUpdate = now;
+  }
+  else if (obstacle_left == LOW ) {
+    lcd.setCursor(0, 1);
+    lcd.print("OBSTACLE L ");
+    shouldMoveForward = false;
+    dc.rollStop(0);
+    dc.setRawMotors(rawMotorModes::reverse, 192, rawMotorModes::reverse, 64);
+    delay(500);
+    dc.rollStop(0);
+    //leftCooldown = millis() + cooldownTime;
+    //rvr.resetYaw();
+    shouldMoveForward = true;
     dc.rollStart(0, 16);
-  }
-  if (obstacle_right == LOW) {
     lcd.setCursor(0, 1);
-    lcd.print("OBSTACLE R     ");
-    rotateRight90();
-    delay(1000);
+    lcd.print("FORWARD          ");
+    lastRollUpdate = now;
+  }
+  else if (obstacle_right == LOW ) {
+    lcd.setCursor(0, 1);
+    lcd.print("OBSTACLE R ");
+    shouldMoveForward = false;
+    dc.rollStop(0);
+    dc.setRawMotors(rawMotorModes::reverse, 64, rawMotorModes::reverse, 192);
+    delay(500);
+    dc.rollStop(0);
+    //leftCooldown = millis() + cooldownTime;
+    //rvr.resetYaw();
+    shouldMoveForward = true;
     dc.rollStart(0, 16);
-  }
-  else {
     lcd.setCursor(0, 1);
-    lcd.print("Liber          ");
+    lcd.print("FORWARD    ");
+    lastRollUpdate = now;
+  }
+  // else if (obstacle_e_right == LOW) {
+  //   lcd.setCursor(0, 1);
+  //   lcd.print("OBSTACLE REG   ");
+  //   shouldMoveForward = false;
+  //   while (digitalRead(OBSTACLE_E_RIGHT) == LOW) {
+  //     rotate180Short(90); 
+  //   }
+  //   e_rightCooldown = millis() + cooldownTime;
+  //   rvr.resetYaw();
+  //   shouldMoveForward = true;
+  // }
+  // else if (obstacle_e_left == LOW) {
+  //   lcd.setCursor(0, 1);
+  //   lcd.print("OBSTACLE LE    ");
+  //   shouldMoveForward = false;
+  //   while (digitalRead(OBSTACLE_E_LEFT) == LOW) {
+  //     rotate180Short(270);
+  //   }
+  //   e_leftCooldown = millis() + cooldownTime;
+  //   rvr.resetYaw();
+  //   shouldMoveForward = true;
+  // }
+  else if (isStarted) {
+    lcd.setCursor(0, 1);
+    lcd.print("FORWARD    ");
   }
 }
 
@@ -171,18 +220,87 @@ void colorCallback(ColorDetectionNotifyReturn_t *detection) {
     uint8_t g = detection->green;
     uint8_t b = detection->blue;
 
-    const uint8_t threshold = 200;
+    const uint8_t threshold = 230;
+    int sensorValue = r*100000+g*1000+b;
 
     lcd.setCursor(0, 0);
-    if (r > threshold) {
-      lcd.print("ROSU           ");
-      stopMotion();
-    } else if (g > threshold) {
-      lcd.print("VERDE          ");
-    } else if (b > threshold) {
-      lcd.print("ALBASTRU       ");
-    } else {
-      lcd.print("Necunoscut     ");
+    
+    if (r >= 228 && g <= 53 && b <= 64) {
+        lcd.print("RED");
+        lcd.setCursor(9, 0);  // Position after "RED" + 4 spaces
+        lcd.print(sensorValue);
+        dc.rollStop(0);
+    } 
+    else if (r >= 251 && g <= 171 && b <= 25) {
+        lcd.print("ORANGE");
+        lcd.setCursor(9, 0);  // Position after "ORANGE" + 4 spaces
+        lcd.print(sensorValue);
     }
-  }
-}
+    else if (r >= 252 && g >= 238 && b <= 33) {
+        lcd.print("YELLOW");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r <= 116 && g >= 192 && b <= 68) {
+        lcd.print("GREEN");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r <= 10 && g >= 161 && b >= 130) {
+        lcd.print("TEAL");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r <= 10 && g <= 123 && b >= 194) {
+        lcd.print("BLUE");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r >= 126 && g <= 79 && b >= 154) {
+        lcd.print("PURPLE");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r >= 202 && g <= 87 && b >= 160) {
+        lcd.print("PINK");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r >= 246 && g >= 146 && b <= 120) {
+        lcd.print("CORAL");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r >= 254 && g >= 198 && b <= 121) {
+        lcd.print("YELLOW_O");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r <= 177 && g >= 216 && b <= 156) {
+        lcd.print("LT GREEN");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r <= 135 && g <= 158 && b >= 207) {
+        lcd.print("CLD BLUE");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r >= 230 && g >= 230 && b >= 230) {
+        lcd.print("WHITE");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else if (r <= 30 && g <= 30 && b <= 30) {
+        lcd.print("BLACK");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+    else {
+        lcd.print("UNKNOWN");
+        lcd.setCursor(9, 0);
+        lcd.print(sensorValue);
+    }
+  
+  } 
+ }
